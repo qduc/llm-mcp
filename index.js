@@ -35,7 +35,7 @@ const AskGPTSchema = z.object({
 
 const AskClaudeSchema = z.object({
     question: z.string(),
-    model: z.string().optional().default('claude-4-sonnet'),
+    model: z.string().optional().default('claude-sonnet-4-20250514'),
     max_tokens: z.number().positive().optional().default(4000),
 });
 
@@ -64,7 +64,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         tools: [
             {
                 name: 'ask_gpt',
-                description: 'Ask a question to OpenAI GPT models',
+                description: 'Ask OpenAI models. Use o-series for reasoning (o3, o4-mini), GPT-4.1-series for dev tasks.',
                 inputSchema: {
                     type: 'object',
                     properties: {
@@ -88,7 +88,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             {
                 name: 'ask_claude',
-                description: 'Ask a question to Anthropic Claude models',
+                description: 'Ask Anthropic models. Use claude-sonnet-4-20250514 (default) for balanced performance. claude-3-5-haiku-20241022 for speed.',
                 inputSchema: {
                     type: 'object',
                     properties: {
@@ -99,7 +99,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                         model: {
                             type: 'string',
                             description: 'Claude model to use',
-                            default: 'claude-4-sonnet'
+                            default: 'claude-sonnet-4-20250514'
                         },
                         max_tokens: {
                             type: 'number',
@@ -112,7 +112,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             },
             {
                 name: 'ask_gemini',
-                description: 'Ask a question to Google Gemini models',
+                description: 'Ask Google models. Use 2.5 Pro for complex problems, 2.5 Flash for price/performance, 2.5 Flash-Lite for speed/cost.',
                 inputSchema: {
                     type: 'object',
                     properties: {
