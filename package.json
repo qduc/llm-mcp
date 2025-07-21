@@ -1,0 +1,29 @@
+{
+  "name": "llm-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for querying LLMs",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "node test-mcp-server.js"
+  },
+  "keywords": [
+    "mcp",
+    "llm",
+    "openai"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.57.0",
+    "@google/generative-ai": "^0.24.1",
+    "@modelcontextprotocol/sdk": "^1.16.0",
+    "openai": "^4.73.1",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.15",
+    "typescript": "^5.8.3"
+  }
+}
