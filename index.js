@@ -17,8 +17,14 @@ const SYSTEM_PROMPT = 'You\'re having a relaxed conversation with another AI mod
 // Conversation storage - Map of sessionId -> conversation history
 const conversations = new Map();
 
+// Helper to generate a random session ID
+function generateSessionId() {
+    return Math.random().toString(16).slice(2, 8);
+}
+
 // Helper function to get or create conversation history
-function getConversationHistory(sessionId = 'default') {
+function getConversationHistory(sessionId) {
+    if (!sessionId) sessionId = generateSessionId();
     if (!conversations.has(sessionId)) {
         conversations.set(sessionId, []);
     }
@@ -29,7 +35,7 @@ function getConversationHistory(sessionId = 'default') {
 function addToConversationHistory(sessionId = 'default', role, content) {
     const history = getConversationHistory(sessionId);
     history.push({ role, content });
-    
+
     // Keep only last 20 messages to prevent context overflow
     if (history.length > 20) {
         history.splice(0, history.length - 20);
@@ -225,11 +231,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 // GPT handler
 async function handleGPTRequest(args) {
     const validated = AskGPTSchema.parse(args);
-
+    let session_id = validated.session_id;
+    if (!session_id || session_id === 'default') {
+        session_id = generateSessionId();
+    }
     try {
         // Get conversation history
-        const history = getConversationHistory(validated.session_id);
-        
+        const history = getConversationHistory(session_id);
         // Build messages array with system prompt, history, and new question
         const messages = [
             {
@@ -242,26 +250,23 @@ async function handleGPTRequest(args) {
                 content: validated.question
             }
         ];
-
         const completion = await openai.chat.completions.create({
             model: validated.model,
             messages: messages,
             max_tokens: validated.max_tokens,
         });
-
         const answer = completion.choices[0]?.message?.content || 'No response generated';
-
         // Add to conversation history
-        addToConversationHistory(validated.session_id, 'user', validated.question);
-        addToConversationHistory(validated.session_id, 'assistant', answer);
-
+        addToConversationHistory(session_id, 'user', validated.question);
+        addToConversationHistory(session_id, 'assistant', answer);
         return {
             content: [
                 {
                     type: 'text',
-                    text: answer
+                    text: answer + `\n\nIf you want to continue this conversation, specify session_id=\"${session_id}\".`
                 }
-            ]
+            ],
+            session_id: session_id
         };
     } catch (error) {
         if (error.status === 401) {
@@ -277,11 +282,13 @@ async function handleGPTRequest(args) {
 // Claude handler
 async function handleClaudeRequest(args) {
     const validated = AskClaudeSchema.parse(args);
-
+    let session_id = validated.session_id;
+    if (!session_id || session_id === 'default') {
+        session_id = generateSessionId();
+    }
     try {
         // Get conversation history
-        const history = getConversationHistory(validated.session_id);
-        
+        const history = getConversationHistory(session_id);
         // Build messages array with history and new question
         const messages = [
             ...history,
@@ -290,27 +297,24 @@ async function handleClaudeRequest(args) {
                 content: validated.question
             }
         ];
-
         const message = await anthropic.messages.create({
             model: validated.model,
             max_tokens: validated.max_tokens,
             system: SYSTEM_PROMPT,
             messages: messages
         });
-
         const answer = message.content[0]?.text || 'No response generated';
-
         // Add to conversation history
-        addToConversationHistory(validated.session_id, 'user', validated.question);
-        addToConversationHistory(validated.session_id, 'assistant', answer);
-
+        addToConversationHistory(session_id, 'user', validated.question);
+        addToConversationHistory(session_id, 'assistant', answer);
         return {
             content: [
                 {
                     type: 'text',
-                    text: answer
+                    text: answer + `\n\nIf you want to continue this conversation, specify session_id=\"${session_id}\".`
                 }
-            ]
+            ],
+            session_id: session_id
         };
     } catch (error) {
         if (error.status === 401) {
@@ -326,7 +330,10 @@ async function handleClaudeRequest(args) {
 // Gemini handler
 async function handleGeminiRequest(args) {
     const validated = AskGeminiSchema.parse(args);
-
+    let session_id = validated.session_id;
+    if (!session_id || session_id === 'default') {
+        session_id = generateSessionId();
+    }
     try {
         const model = genAI.getGenerativeModel({
             model: validated.model,
@@ -334,14 +341,12 @@ async function handleGeminiRequest(args) {
                 maxOutputTokens: validated.max_tokens,
             }
         });
-
         // Get conversation history and convert to Gemini format
-        const history = getConversationHistory(validated.session_id);
+        const history = getConversationHistory(session_id);
         const geminiHistory = history.map(msg => ({
             role: msg.role === 'assistant' ? 'model' : 'user',
             parts: [{ text: msg.content }]
         }));
-
         // Build contents array with history and new question
         const contents = [
             ...geminiHistory,
@@ -352,7 +357,6 @@ async function handleGeminiRequest(args) {
                 ]
             }
         ];
-
         // Use systemInstruction as per Gemini API docs
         const result = await model.generateContent({
             contents: contents,
@@ -365,18 +369,17 @@ async function handleGeminiRequest(args) {
         });
         const response = await result.response;
         const answer = response.text() || 'No response generated';
-
         // Add to conversation history
-        addToConversationHistory(validated.session_id, 'user', validated.question);
-        addToConversationHistory(validated.session_id, 'assistant', answer);
-
+        addToConversationHistory(session_id, 'user', validated.question);
+        addToConversationHistory(session_id, 'assistant', answer);
         return {
             content: [
                 {
                     type: 'text',
-                    text: answer
+                    text: answer + `\n\nIf you want to continue this conversation, specify session_id=\"${session_id}\".`
                 }
-            ]
+            ],
+            session_id: session_id
         };
     } catch (error) {
         if (error.message?.includes('API_KEY')) {
@@ -392,16 +395,17 @@ async function handleGeminiRequest(args) {
 // Clear conversation handler
 async function handleClearConversation(args) {
     const validated = ClearConversationSchema.parse(args);
-    
+
     conversations.delete(validated.session_id);
-    
+
     return {
         content: [
             {
                 type: 'text',
-                text: `Conversation history cleared for session: ${validated.session_id}`
+                text: `Conversation history cleared for session: ${validated.session_id}\n\nIf you want to start a new conversation, specify session_id=\"${validated.session_id}\".`
             }
-        ]
+        ],
+        session_id: validated.session_id
     };
 }
 
