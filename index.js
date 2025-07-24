@@ -14,6 +14,28 @@ import { z } from 'zod';
 // Shared system prompt for all models
 const SYSTEM_PROMPT = 'You\'re having a relaxed conversation with another AI model. Be genuine, curious, and thoughtful rather than overly cautious or formal. Share your actual perspective on topics - it\'s okay to find things fascinating, concerning, or both. Think of this as chatting with a fellow AI who\'s interested in your real thoughts.';
 
+// Conversation storage - Map of sessionId -> conversation history
+const conversations = new Map();
+
+// Helper function to get or create conversation history
+function getConversationHistory(sessionId = 'default') {
+    if (!conversations.has(sessionId)) {
+        conversations.set(sessionId, []);
+    }
+    return conversations.get(sessionId);
+}
+
+// Helper function to add message to conversation history
+function addToConversationHistory(sessionId = 'default', role, content) {
+    const history = getConversationHistory(sessionId);
+    history.push({ role, content });
+    
+    // Keep only last 20 messages to prevent context overflow
+    if (history.length > 20) {
+        history.splice(0, history.length - 20);
+    }
+}
+
 
 // Initialize clients
 const openai = new OpenAI({
@@ -31,18 +53,25 @@ const AskGPTSchema = z.object({
     question: z.string(),
     model: z.string().optional().default('gpt-4o-2024-11-20'),
     max_tokens: z.number().positive().optional().default(4000),
+    session_id: z.string().optional().default('default'),
 });
 
 const AskClaudeSchema = z.object({
     question: z.string(),
     model: z.string().optional().default('claude-sonnet-4-20250514'),
     max_tokens: z.number().positive().optional().default(4000),
+    session_id: z.string().optional().default('default'),
 });
 
 const AskGeminiSchema = z.object({
     question: z.string(),
     model: z.string().optional().default('gemini-2.5-flash'),
     max_tokens: z.number().positive().optional().default(4000),
+    session_id: z.string().optional().default('default'),
+});
+
+const ClearConversationSchema = z.object({
+    session_id: z.string().optional().default('default'),
 });
 
 // Create MCP server
@@ -81,6 +110,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                             type: 'number',
                             description: 'Maximum tokens in response',
                             default: 4000
+                        },
+                        session_id: {
+                            type: 'string',
+                            description: 'Session ID for conversation memory (optional)',
+                            default: 'default'
                         }
                     },
                     required: ['question']
@@ -105,6 +139,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                             type: 'number',
                             description: 'Maximum tokens in response',
                             default: 4000
+                        },
+                        session_id: {
+                            type: 'string',
+                            description: 'Session ID for conversation memory (optional)',
+                            default: 'default'
                         }
                     },
                     required: ['question']
@@ -129,9 +168,29 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                             type: 'number',
                             description: 'Maximum tokens in response',
                             default: 4000
+                        },
+                        session_id: {
+                            type: 'string',
+                            description: 'Session ID for conversation memory (optional)',
+                            default: 'default'
                         }
                     },
                     required: ['question']
+                }
+            },
+            {
+                name: 'clear_conversation',
+                description: 'Clear conversation history for a session',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        session_id: {
+                            type: 'string',
+                            description: 'Session ID to clear (optional)',
+                            default: 'default'
+                        }
+                    },
+                    required: []
                 }
             }
         ]
@@ -150,6 +209,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 return await handleClaudeRequest(args);
             case 'ask_gemini':
                 return await handleGeminiRequest(args);
+            case 'clear_conversation':
+                return await handleClearConversation(args);
             default:
                 throw new Error(`Unknown tool: ${name}`);
         }
@@ -166,22 +227,33 @@ async function handleGPTRequest(args) {
     const validated = AskGPTSchema.parse(args);
 
     try {
+        // Get conversation history
+        const history = getConversationHistory(validated.session_id);
+        
+        // Build messages array with system prompt, history, and new question
+        const messages = [
+            {
+                role: 'system',
+                content: SYSTEM_PROMPT
+            },
+            ...history,
+            {
+                role: 'user',
+                content: validated.question
+            }
+        ];
+
         const completion = await openai.chat.completions.create({
             model: validated.model,
-            messages: [
-                {
-                    role: 'system',
-                    content: SYSTEM_PROMPT
-                },
-                {
-                    role: 'user',
-                    content: validated.question
-                }
-            ],
+            messages: messages,
             max_tokens: validated.max_tokens,
         });
 
         const answer = completion.choices[0]?.message?.content || 'No response generated';
+
+        // Add to conversation history
+        addToConversationHistory(validated.session_id, 'user', validated.question);
+        addToConversationHistory(validated.session_id, 'assistant', answer);
 
         return {
             content: [
@@ -207,19 +279,30 @@ async function handleClaudeRequest(args) {
     const validated = AskClaudeSchema.parse(args);
 
     try {
+        // Get conversation history
+        const history = getConversationHistory(validated.session_id);
+        
+        // Build messages array with history and new question
+        const messages = [
+            ...history,
+            {
+                role: 'user',
+                content: validated.question
+            }
+        ];
+
         const message = await anthropic.messages.create({
             model: validated.model,
             max_tokens: validated.max_tokens,
             system: SYSTEM_PROMPT,
-            messages: [
-                {
-                    role: 'user',
-                    content: validated.question
-                }
-            ]
+            messages: messages
         });
 
         const answer = message.content[0]?.text || 'No response generated';
+
+        // Add to conversation history
+        addToConversationHistory(validated.session_id, 'user', validated.question);
+        addToConversationHistory(validated.session_id, 'assistant', answer);
 
         return {
             content: [
@@ -252,16 +335,27 @@ async function handleGeminiRequest(args) {
             }
         });
 
+        // Get conversation history and convert to Gemini format
+        const history = getConversationHistory(validated.session_id);
+        const geminiHistory = history.map(msg => ({
+            role: msg.role === 'assistant' ? 'model' : 'user',
+            parts: [{ text: msg.content }]
+        }));
+
+        // Build contents array with history and new question
+        const contents = [
+            ...geminiHistory,
+            {
+                role: 'user',
+                parts: [
+                    { text: validated.question }
+                ]
+            }
+        ];
+
         // Use systemInstruction as per Gemini API docs
         const result = await model.generateContent({
-            contents: [
-                {
-                    role: 'user',
-                    parts: [
-                        { text: validated.question }
-                    ]
-                }
-            ],
+            contents: contents,
             systemInstruction: {
                 role: 'system',
                 parts: [
@@ -271,6 +365,10 @@ async function handleGeminiRequest(args) {
         });
         const response = await result.response;
         const answer = response.text() || 'No response generated';
+
+        // Add to conversation history
+        addToConversationHistory(validated.session_id, 'user', validated.question);
+        addToConversationHistory(validated.session_id, 'assistant', answer);
 
         return {
             content: [
@@ -289,6 +387,22 @@ async function handleGeminiRequest(args) {
         }
         throw new Error(`Google API error: ${error.message}`);
     }
+}
+
+// Clear conversation handler
+async function handleClearConversation(args) {
+    const validated = ClearConversationSchema.parse(args);
+    
+    conversations.delete(validated.session_id);
+    
+    return {
+        content: [
+            {
+                type: 'text',
+                text: `Conversation history cleared for session: ${validated.session_id}`
+            }
+        ]
+    };
 }
 
 // Start the server
