@@ -10,6 +10,7 @@ A Model Context Protocol (MCP) server that enables AI clients to query multiple 
   - OpenAI API key (for GPT models)
   - Anthropic API key (for Claude models)
   - Google API key (for Gemini models)
+  - OpenRouter API key (for Qwen models)
 
 ## Installation
 
@@ -21,11 +22,12 @@ npm install
 
 ## Usage
 
-This MCP server provides three tools for querying different AI models:
+This MCP server provides four tools for querying different AI models:
 
 - `ask_gpt` - Query OpenAI GPT models (default: gpt-4o-2024-11-20)
 - `ask_claude` - Query Anthropic Claude models (default: claude-4-sonnet)
 - `ask_gemini` - Query Google Gemini models (default: gemini-2.5-flash)
+- `ask_qwen` - Query Qwen models via OpenRouter (default: qwen/qwq-32b-preview)
 
 ### Available Tools
 
@@ -33,6 +35,27 @@ Each tool accepts the following parameters:
 - `question` (required): The question to ask the AI model
 - `model` (optional): Specific model to use (defaults provided)
 - `max_tokens` (optional): Maximum tokens in response (default: 4000)
+- `session_id` (optional): Session ID for conversation memory
+
+### Recommended Models
+
+**OpenAI GPT (`ask_gpt`)**:
+- `gpt-4o-2024-11-20` (default) - Latest GPT-4 model
+- `o3` - Reasoning model for complex problems
+- `o4-mini` - Faster reasoning model
+
+**Anthropic Claude (`ask_claude`)**:
+- `claude-sonnet-4-20250514` (default) - Balanced performance
+- `claude-3-5-haiku-20241022` - Speed optimized
+
+**Google Gemini (`ask_gemini`)**:
+- `gemini-2.5-flash` (default) - Price/performance balance
+- `gemini-2.5-pro` - Complex problems
+- `gemini-2.5-flash-lite` - Speed/cost optimized
+
+**Qwen via OpenRouter (`ask_qwen`)**:
+- `qwen/qwq-32b-preview` (default) - Reasoning tasks
+- `qwen/qwen-2.5-72b-instruct` - General tasks
 
 ### Connecting to MCP Clients
 
@@ -48,7 +71,8 @@ This server is designed to work with MCP-compatible clients like Claude Desktop.
         "env": {
             "OPENAI_API_KEY": "your-openai-key",
             "ANTHROPIC_API_KEY": "your-anthropic-key",
-            "GOOGLE_API_KEY": "your-google-key"
+            "GOOGLE_API_KEY": "your-google-key",
+            "OPENROUTER_API_KEY": "your-openrouter-key"
         }
     }
 }
