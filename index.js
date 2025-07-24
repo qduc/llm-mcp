@@ -93,6 +93,13 @@ const AskQwenSchema = z.object({
     session_id: z.string().optional().default('default'),
 });
 
+const AskDeepSeekSchema = z.object({
+    question: z.string(),
+    model: z.string().optional().default('deepseek/deepseek-chat-v3-0324'),
+    max_tokens: z.number().positive().optional().default(4000),
+    session_id: z.string().optional().default('default'),
+});
+
 // Create MCP server
 const server = new Server(
     {
@@ -240,6 +247,35 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                     },
                     required: ['question']
                 }
+            },
+            {
+                name: 'ask_deepseek',
+                description: 'Ask DeepSeek models via OpenRouter. Use deepseek/deepseek-chat-v3-0324 for advanced reasoning.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        question: {
+                            type: 'string',
+                            description: 'The question to ask DeepSeek'
+                        },
+                        model: {
+                            type: 'string',
+                            description: 'DeepSeek model to use via OpenRouter',
+                            default: 'deepseek/deepseek-chat-v3-0324'
+                        },
+                        max_tokens: {
+                            type: 'number',
+                            description: 'Maximum tokens in response',
+                            default: 4000
+                        },
+                        session_id: {
+                            type: 'string',
+                            description: 'Session ID for conversation memory (optional)',
+                            default: 'default'
+                        }
+                    },
+                    required: ['question']
+                }
             }
         ]
     };
@@ -259,11 +295,69 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 return await handleGeminiRequest(args);
             case 'ask_qwen':
                 return await handleQwenRequest(args);
+            case 'ask_deepseek':
+                return await handleDeepSeekRequest(args);
             case 'clear_conversation':
                 return await handleClearConversation(args);
             default:
                 throw new Error(`Unknown tool: ${name}`);
         }
+// DeepSeek handler (via OpenRouter)
+async function handleDeepSeekRequest(args) {
+    const validated = AskDeepSeekSchema.parse(args);
+    let session_id = validated.session_id;
+    if (!session_id || session_id === 'default') {
+        session_id = generateSessionId();
+    }
+
+    try {
+        // Get conversation history
+        const history = getConversationHistory(session_id);
+
+        // Build messages array with system prompt, history, and new question
+        const messages = [
+            {
+                role: 'system',
+                content: SYSTEM_PROMPT
+            },
+            ...history,
+            {
+                role: 'user',
+                content: validated.question
+            }
+        ];
+
+        const completion = await openrouter.chat.completions.create({
+            model: validated.model,
+            messages: messages,
+            max_tokens: validated.max_tokens,
+        });
+
+        const answer = completion.choices[0]?.message?.content || 'No response generated';
+
+        // Add to conversation history
+        addToConversationHistory(session_id, 'user', validated.question);
+        addToConversationHistory(session_id, 'assistant', answer);
+
+        return {
+            content: [
+                {
+                    type: 'text',
+                    text: answer + `\n\nIf you want to continue this conversation, specify session_id=\"${session_id}\".`
+                }
+            ],
+            session_id: session_id
+        };
+    } catch (error) {
+        if (error.status === 401) {
+            throw new Error('OpenRouter API key is invalid or missing. Please set OPENROUTER_API_KEY environment variable.');
+        }
+        if (error.status === 429) {
+            throw new Error('OpenRouter API rate limit exceeded. Please try again later.');
+        }
+        throw new Error(`OpenRouter API error: ${error.message}`);
+    }
+}
     } catch (error) {
         if (error.name === 'ZodError') {
             throw new Error(`Invalid arguments: ${error.message}`);
