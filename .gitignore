@@ -26,6 +26,7 @@ logs/
 # IDE files
 .vscode/
 .idea/
+.kiro/
 *.sublime-workspace
 *.sublime-project
 
@@ -40,3 +41,4 @@ logs/
 
 # TypeScript cache
 *.tsbuildinfo
+.aider*

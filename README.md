@@ -22,20 +22,17 @@ npm install
 
 ## Usage
 
-This MCP server provides four tools for querying different AI models:
+This MCP server provides five tools for querying different AI models:
 
 - `ask_gpt` - Query OpenAI GPT models (default: gpt-4o-2024-11-20)
 - `ask_claude` - Query Anthropic Claude models (default: claude-4-sonnet)
 - `ask_gemini` - Query Google Gemini models (default: gemini-2.5-flash)
 - `ask_qwen` - Query Qwen models via OpenRouter (default: qwen/qwq-32b-preview)
+- `ask_deepseek` - Query DeepSeek models via OpenRouter (default: deepseek/deepseek-chat-v3-0324)
 
 ### Available Tools
 
 Each tool accepts the following parameters:
-- `question` (required): The question to ask the AI model
-- `model` (optional): Specific model to use (defaults provided)
-- `max_tokens` (optional): Maximum tokens in response (default: 4000)
-- `session_id` (optional): Session ID for conversation memory
 
 ### Recommended Models
 
@@ -53,9 +50,13 @@ Each tool accepts the following parameters:
 - `gemini-2.5-pro` - Complex problems
 - `gemini-2.5-flash-lite` - Speed/cost optimized
 
+
 **Qwen via OpenRouter (`ask_qwen`)**:
 - `qwen/qwq-32b-preview` (default) - Reasoning tasks
 - `qwen/qwen-2.5-72b-instruct` - General tasks
+
+**DeepSeek via OpenRouter (`ask_deepseek`)**:
+- `deepseek/deepseek-chat-v3-0324` (default) - Advanced reasoning and general tasks
 
 ### Connecting to MCP Clients
 

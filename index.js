@@ -64,21 +64,18 @@ const openrouter = new OpenAI({
 const AskGPTSchema = z.object({
     question: z.string(),
     model: z.string().optional().default('gpt-4o-2024-11-20'),
-    max_tokens: z.number().positive().optional().default(4000),
     session_id: z.string().optional().default('default'),
 });
 
 const AskClaudeSchema = z.object({
     question: z.string(),
     model: z.string().optional().default('claude-sonnet-4-20250514'),
-    max_tokens: z.number().positive().optional().default(4000),
     session_id: z.string().optional().default('default'),
 });
 
 const AskGeminiSchema = z.object({
     question: z.string(),
     model: z.string().optional().default('gemini-2.5-flash'),
-    max_tokens: z.number().positive().optional().default(4000),
     session_id: z.string().optional().default('default'),
 });
 
@@ -89,14 +86,12 @@ const ClearConversationSchema = z.object({
 const AskQwenSchema = z.object({
     question: z.string(),
     model: z.string().optional().default('qwen/qwen3-235b-a22b-07-25'),
-    max_tokens: z.number().positive().optional().default(4000),
     session_id: z.string().optional().default('default'),
 });
 
 const AskDeepSeekSchema = z.object({
     question: z.string(),
     model: z.string().optional().default('deepseek/deepseek-chat-v3-0324'),
-    max_tokens: z.number().positive().optional().default(4000),
     session_id: z.string().optional().default('default'),
 });
 
@@ -120,31 +115,26 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             {
                 name: 'ask_gpt',
                 description: 'Ask OpenAI models. Use o-series for reasoning (o3, o4-mini), GPT-4.1-series for dev tasks.',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        question: {
-                            type: 'string',
-                            description: 'The question to ask GPT'
-                        },
-                        model: {
-                            type: 'string',
-                            description: 'OpenAI model to use',
-                            default: 'gpt-4o-2024-11-20'
-                        },
-                        max_tokens: {
-                            type: 'number',
-                            description: 'Maximum tokens in response',
-                            default: 4000
-                        },
-                        session_id: {
-                            type: 'string',
-                            description: 'Session ID for conversation memory (optional)',
-                            default: 'default'
+                        inputSchema: {
+                            type: 'object',
+                            properties: {
+                                question: {
+                                    type: 'string',
+                                    description: 'The question to ask GPT'
+                                },
+                                model: {
+                                    type: 'string',
+                                    description: 'OpenAI model to use',
+                                    default: 'gpt-4o-2024-11-20'
+                                },
+                                session_id: {
+                                    type: 'string',
+                                    description: 'Session ID for conversation memory (optional)',
+                                    default: 'default'
+                                }
+                            },
+                            required: ['question']
                         }
-                    },
-                    required: ['question']
-                }
             },
             {
                 name: 'ask_claude',
@@ -160,11 +150,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                             type: 'string',
                             description: 'Claude model to use',
                             default: 'claude-sonnet-4-20250514'
-                        },
-                        max_tokens: {
-                            type: 'number',
-                            description: 'Maximum tokens in response',
-                            default: 4000
                         },
                         session_id: {
                             type: 'string',
@@ -189,11 +174,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                             type: 'string',
                             description: 'Gemini model to use',
                             default: 'gemini-2.5-flash'
-                        },
-                        max_tokens: {
-                            type: 'number',
-                            description: 'Maximum tokens in response',
-                            default: 4000
                         },
                         session_id: {
                             type: 'string',
@@ -234,11 +214,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                             description: 'Qwen model to use',
                             default: 'qwen/qwen3-235b-a22b-07-25'
                         },
-                        max_tokens: {
-                            type: 'number',
-                            description: 'Maximum tokens in response',
-                            default: 4000
-                        },
                         session_id: {
                             type: 'string',
                             description: 'Session ID for conversation memory (optional)',
@@ -262,11 +237,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                             type: 'string',
                             description: 'DeepSeek model to use via OpenRouter',
                             default: 'deepseek/deepseek-chat-v3-0324'
-                        },
-                        max_tokens: {
-                            type: 'number',
-                            description: 'Maximum tokens in response',
-                            default: 4000
                         },
                         session_id: {
                             type: 'string',
@@ -330,7 +300,6 @@ async function handleDeepSeekRequest(args) {
         const completion = await openrouter.chat.completions.create({
             model: validated.model,
             messages: messages,
-            max_tokens: validated.max_tokens,
         });
 
         const answer = completion.choices[0]?.message?.content || 'No response generated';
@@ -391,7 +360,6 @@ async function handleGPTRequest(args) {
         const completion = await openai.chat.completions.create({
             model: validated.model,
             messages: messages,
-            max_tokens: validated.max_tokens,
         });
         const answer = completion.choices[0]?.message?.content || 'No response generated';
         // Add to conversation history
@@ -437,7 +405,6 @@ async function handleClaudeRequest(args) {
         ];
         const message = await anthropic.messages.create({
             model: validated.model,
-            max_tokens: validated.max_tokens,
             system: SYSTEM_PROMPT,
             messages: messages
         });
@@ -475,9 +442,6 @@ async function handleGeminiRequest(args) {
     try {
         const model = genAI.getGenerativeModel({
             model: validated.model,
-            generationConfig: {
-                maxOutputTokens: validated.max_tokens,
-            }
         });
         // Get conversation history and convert to Gemini format
         const history = getConversationHistory(session_id);
@@ -558,7 +522,6 @@ async function handleQwenRequest(args) {
         const completion = await openrouter.chat.completions.create({
             model: validated.model,
             messages: messages,
-            max_tokens: validated.max_tokens,
         });
 
         const answer = completion.choices[0]?.message?.content || 'No response generated';
