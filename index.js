@@ -272,6 +272,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             default:
                 throw new Error(`Unknown tool: ${name}`);
         }
+    } catch (error) {
+        if (error.name === 'ZodError') {
+            throw new Error(`Invalid arguments: ${error.message}`);
+        }
+        throw error;
+    }
+});
+
 // DeepSeek handler (via OpenRouter)
 async function handleDeepSeekRequest(args) {
     const validated = AskDeepSeekSchema.parse(args);
@@ -327,13 +335,6 @@ async function handleDeepSeekRequest(args) {
         throw new Error(`OpenRouter API error: ${error.message}`);
     }
 }
-    } catch (error) {
-        if (error.name === 'ZodError') {
-            throw new Error(`Invalid arguments: ${error.message}`);
-        }
-        throw error;
-    }
-});
 
 // GPT handler
 async function handleGPTRequest(args) {
