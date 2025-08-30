@@ -235,10 +235,17 @@ async function handleGPTRequest(args) {
             }
         ];
 
-        const completion = await openai.chat.completions.create({
+        const requestParams = {
             model: validated.model,
             messages: messages,
-        });
+        };
+
+        // Add tools if provided
+        if (validated.tools) {
+            requestParams.tools = validated.tools;
+        }
+
+        const completion = await openai.chat.completions.create(requestParams);
 
         const answer = completion.choices[0]?.message?.content || 'No response generated';
 
@@ -266,11 +273,18 @@ async function handleClaudeRequest(args) {
             }
         ];
 
-        const message = await anthropic.messages.create({
+        const requestParams = {
             model: validated.model,
             system: SYSTEM_PROMPT,
             messages: messages
-        });
+        };
+
+        // Add tools if provided
+        if (validated.tools) {
+            requestParams.tools = validated.tools;
+        }
+
+        const message = await anthropic.messages.create(requestParams);
 
         const answer = message.content[0]?.text || 'No response generated';
 
@@ -310,8 +324,7 @@ async function handleGeminiRequest(args) {
             }
         ];
 
-        // Use systemInstruction as per Gemini API docs
-        const result = await model.generateContent({
+        const requestParams = {
             contents: contents,
             systemInstruction: {
                 role: 'system',
@@ -319,7 +332,15 @@ async function handleGeminiRequest(args) {
                     { text: SYSTEM_PROMPT }
                 ]
             }
-        });
+        };
+
+        // Add tools if provided
+        if (validated.tools) {
+            requestParams.tools = validated.tools;
+        }
+
+        // Use systemInstruction as per Gemini API docs
+        const result = await model.generateContent(requestParams);
 
         const response = await result.response;
         const answer = response.text() || 'No response generated';
@@ -355,10 +376,17 @@ async function handleOpenRouterRequest(args) {
             }
         ];
 
-        const completion = await openrouter.chat.completions.create({
+        const requestParams = {
             model: validated.model,
             messages: messages,
-        });
+        };
+
+        // Add tools if provided
+        if (validated.tools) {
+            requestParams.tools = validated.tools;
+        }
+
+        const completion = await openrouter.chat.completions.create(requestParams);
 
         const answer = completion.choices[0]?.message?.content || 'No response generated';
         // Extract tool/function call in a provider-agnostic way
