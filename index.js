@@ -42,6 +42,57 @@ function addToConversationHistory(sessionId = 'default', role, content) {
     }
 }
 
+// Normalize/extract a tool/function call from a completion object.
+// Returns null or { source, name, args, raw } where args is parsed if JSON.
+function extractToolCall(completion) {
+    const choice = completion?.choices?.[0];
+    const message = choice?.message ?? {};
+
+    // 1) OpenAI canonical function_call
+    if (message.function_call) {
+        const fc = message.function_call;
+        let args = fc.arguments;
+        if (typeof args === 'string') {
+            try { args = JSON.parse(args); } catch (e) { /* keep raw string */ }
+        }
+        return { source: 'function_call', name: fc.name ?? null, args, raw: fc };
+    }
+
+    // 2) Some providers place a single tool_call on the message
+    if (message.tool_call) {
+        const tc = message.tool_call;
+        let args = tc.arguments ?? tc.args ?? tc;
+        if (typeof args === 'string') {
+            try { args = JSON.parse(args); } catch (e) { /* keep string */ }
+        }
+        return { source: 'tool_call', name: tc.name ?? null, args, raw: tc };
+    }
+
+    // 3) Some place tool_call inside metadata
+    if (message.metadata?.tool_call) {
+        const tc = message.metadata.tool_call;
+        let args = tc.arguments ?? tc.args ?? tc;
+        if (typeof args === 'string') {
+            try { args = JSON.parse(args); } catch (e) { /* keep string */ }
+        }
+        return { source: 'metadata.tool_call', name: tc.name ?? null, args, raw: tc };
+    }
+
+    // 4) Some responses include a tool_calls array (plural)
+    if (message.tool_calls && Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
+        const tc = message.tool_calls[0]; // choose first by default
+        let args = tc.function?.arguments ?? tc.function?.args ?? tc.function ?? tc;
+        if (typeof args === 'string') {
+            try { args = JSON.parse(args); } catch (e) { /* keep string */ }
+        }
+        const name = tc.function?.name ?? tc.name ?? null;
+        return { source: 'tool_calls[0]', name, args, raw: tc };
+    }
+
+    // Not found
+    return null;
+}
+
 
 // Initialize clients
 const openai = new OpenAI({
@@ -63,19 +114,22 @@ const openrouter = new OpenAI({
 // Validation schemas
 const AskGPTSchema = z.object({
     question: z.string(),
-    model: z.string().optional().default('gpt-4o-2024-11-20'),
+    model: z.string().optional().default('gpt-5'),
+    tools: z.any().optional(),
     session_id: z.string().optional().default('default'),
 });
 
 const AskClaudeSchema = z.object({
     question: z.string(),
     model: z.string().optional().default('claude-sonnet-4-20250514'),
+    tools: z.any().optional(),
     session_id: z.string().optional().default('default'),
 });
 
 const AskGeminiSchema = z.object({
     question: z.string(),
     model: z.string().optional().default('gemini-2.5-flash'),
+    tools: z.any().optional(),
     session_id: z.string().optional().default('default'),
 });
 
@@ -83,15 +137,17 @@ const ClearConversationSchema = z.object({
     session_id: z.string().optional().default('default'),
 });
 
-const AskQwenSchema = z.object({
+const AskOpenRouterSchema = z.object({
     question: z.string(),
     model: z.string().optional().default('qwen/qwen3-235b-a22b-07-25'),
+    tools: z.any().optional(),
     session_id: z.string().optional().default('default'),
 });
 
 const AskDeepSeekSchema = z.object({
     question: z.string(),
     model: z.string().optional().default('deepseek/deepseek-chat-v3-0324'),
+    tools: z.any().optional(),
     session_id: z.string().optional().default('default'),
 });
 
@@ -127,6 +183,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                                     description: 'OpenAI model to use',
                                     default: 'gpt-4o-2024-11-20'
                                 },
+                                tools: {
+                                    type: 'object',
+                                    description: 'Optional tool definitions/schema to provide to the model',
+                                    additionalProperties: true
+                                },
                                 session_id: {
                                     type: 'string',
                                     description: 'Session ID for conversation memory (optional)',
@@ -151,6 +212,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                             description: 'Claude model to use',
                             default: 'claude-sonnet-4-20250514'
                         },
+                        tools: {
+                            type: 'object',
+                            description: 'Optional tool definitions/schema to provide to the model',
+                            additionalProperties: true
+                        },
                         session_id: {
                             type: 'string',
                             description: 'Session ID for conversation memory (optional)',
@@ -174,6 +240,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                             type: 'string',
                             description: 'Gemini model to use',
                             default: 'gemini-2.5-flash'
+                        },
+                        tools: {
+                            type: 'object',
+                            description: 'Optional tool definitions/schema to provide to the model',
+                            additionalProperties: true
                         },
                         session_id: {
                             type: 'string',
@@ -200,19 +271,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 }
             },
             {
-                name: 'ask_qwen',
-                description: 'Ask Qwen model.',
+                name: 'ask_openrouter',
+                description: 'Ask a model hosted on OpenRouter (e.g., Qwen).',
                 inputSchema: {
                     type: 'object',
                     properties: {
                         question: {
                             type: 'string',
-                            description: 'The question to ask Qwen'
+                            description: 'The question to ask the OpenRouter-hosted model'
                         },
                         model: {
                             type: 'string',
-                            description: 'Qwen model to use',
+                            description: 'Model to use via OpenRouter (e.g., qwen/qwen3-235b-a22b-07-25)',
                             default: 'qwen/qwen3-235b-a22b-07-25'
+                        },
+                        tools: {
+                            type: 'object',
+                            description: 'Optional tool definitions/schema to provide to the model',
+                            additionalProperties: true
                         },
                         session_id: {
                             type: 'string',
@@ -223,30 +299,30 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                     required: ['question']
                 }
             },
-            {
-                name: 'ask_deepseek',
-                description: 'Ask DeepSeek models via OpenRouter. Use deepseek/deepseek-chat-v3-0324 for advanced reasoning.',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        question: {
-                            type: 'string',
-                            description: 'The question to ask DeepSeek'
-                        },
-                        model: {
-                            type: 'string',
-                            description: 'DeepSeek model to use via OpenRouter',
-                            default: 'deepseek/deepseek-chat-v3-0324'
-                        },
-                        session_id: {
-                            type: 'string',
-                            description: 'Session ID for conversation memory (optional)',
-                            default: 'default'
-                        }
-                    },
-                    required: ['question']
-                }
-            }
+            // {
+            //     name: 'ask_deepseek',
+            //     description: 'Ask DeepSeek models via OpenRouter. Use deepseek/deepseek-chat-v3-0324 for advanced reasoning.',
+            //     inputSchema: {
+            //         type: 'object',
+            //         properties: {
+            //             question: {
+            //                 type: 'string',
+            //                 description: 'The question to ask DeepSeek'
+            //             },
+            //             model: {
+            //                 type: 'string',
+            //                 description: 'DeepSeek model to use via OpenRouter',
+            //                 default: 'deepseek/deepseek-chat-v3-0324'
+            //             },
+            //             session_id: {
+            //                 type: 'string',
+            //                 description: 'Session ID for conversation memory (optional)',
+            //                 default: 'default'
+            //             }
+            //         },
+            //         required: ['question']
+            //     }
+            // }
         ]
     };
 });
@@ -263,8 +339,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 return await handleClaudeRequest(args);
             case 'ask_gemini':
                 return await handleGeminiRequest(args);
-            case 'ask_qwen':
-                return await handleQwenRequest(args);
+        case 'ask_openrouter':
+            return await handleOpenRouterRequest(args);
             case 'ask_deepseek':
                 return await handleDeepSeekRequest(args);
             case 'clear_conversation':
@@ -310,20 +386,31 @@ async function handleDeepSeekRequest(args) {
             messages: messages,
         });
 
-        const answer = completion.choices[0]?.message?.content || 'No response generated';
+    const answer = completion.choices[0]?.message?.content || 'No response generated';
+    const toolCall = extractToolCall(completion);
 
         // Add to conversation history
         addToConversationHistory(session_id, 'user', validated.question);
         addToConversationHistory(session_id, 'assistant', answer);
 
+        const content = [
+            {
+                type: 'text',
+                text: answer + `\n\nIf you want to continue this conversation, specify session_id=\"${session_id}\".`
+            }
+        ];
+
+        if (toolCall) {
+            content.push({
+                type: 'text',
+                text: `tool_call: ${JSON.stringify(toolCall)}`
+            });
+        }
+
         return {
-            content: [
-                {
-                    type: 'text',
-                    text: answer + `\n\nIf you want to continue this conversation, specify session_id=\"${session_id}\".`
-                }
-            ],
-            session_id: session_id
+            content,
+            session_id: session_id,
+            tool_call: toolCall || null
         };
     } catch (error) {
         if (error.status === 401) {
@@ -496,8 +583,9 @@ async function handleGeminiRequest(args) {
 }
 
 // Qwen handler (via OpenRouter)
-async function handleQwenRequest(args) {
-    const validated = AskQwenSchema.parse(args);
+// OpenRouter handler (generic for models hosted on OpenRouter, e.g., Qwen)
+async function handleOpenRouterRequest(args) {
+    const validated = AskOpenRouterSchema.parse(args);
     let session_id = validated.session_id;
     if (!session_id || session_id === 'default') {
         session_id = generateSessionId();
@@ -525,20 +613,32 @@ async function handleQwenRequest(args) {
             messages: messages,
         });
 
-        const answer = completion.choices[0]?.message?.content || 'No response generated';
+    const answer = completion.choices[0]?.message?.content || 'No response generated';
+    // Extract tool/function call in a provider-agnostic way
+    const toolCall = extractToolCall(completion);
 
         // Add to conversation history
         addToConversationHistory(session_id, 'user', validated.question);
         addToConversationHistory(session_id, 'assistant', answer);
 
+        const content = [
+            {
+                type: 'text',
+                text: answer + `\n\nIf you want to continue this conversation, specify session_id=\"${session_id}\".`
+            }
+        ];
+
+        if (toolCall) {
+            content.push({
+                type: 'text',
+                text: `tool_call: ${JSON.stringify(toolCall)}`
+            });
+        }
+
         return {
-            content: [
-                {
-                    type: 'text',
-                    text: answer + `\n\nIf you want to continue this conversation, specify session_id=\"${session_id}\".`
-                }
-            ],
-            session_id: session_id
+            content,
+            session_id: session_id,
+            tool_call: toolCall || null
         };
     } catch (error) {
         if (error.status === 401) {
