@@ -181,8 +181,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 description: 'Ask a model hosted on OpenRouter (e.g., Qwen).',
                 inputSchema: createLLMToolSchema(
                     'The question to ask the OpenRouter-hosted model',
-                    'Model to use via OpenRouter (e.g., qwen/qwen3-235b-a22b-07-25)',
-                    'qwen/qwen3-235b-a22b-07-25'
+                    'Model to use via OpenRouter (e.g., qwen/qwen3-235b-a22b-2507, qwen/qwen3-30b-a3b-instruct-2507, openai/gpt-oss-20b)',
+                    'qwen/qwen3-235b-a22b-2507'
                 )
             },
         ]
