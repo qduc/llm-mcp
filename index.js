@@ -248,11 +248,13 @@ async function handleGPTRequest(args) {
         const completion = await openai.chat.completions.create(requestParams);
 
         const answer = completion.choices[0]?.message?.content || 'No response generated';
+        // Extract tool/function call in a provider-agnostic way
+        const toolCall = extractToolCall(completion);
 
         // Save conversation history
         saveConversationHistory(resolvedSessionId, validated.question, answer);
 
-        return formatResponse(answer, resolvedSessionId);
+        return formatResponse(answer, resolvedSessionId, toolCall);
     } catch (error) {
         handleAPIError(error, 'OpenAI', 'OPENAI_API_KEY');
     }
@@ -287,11 +289,13 @@ async function handleClaudeRequest(args) {
         const message = await anthropic.messages.create(requestParams);
 
         const answer = message.content[0]?.text || 'No response generated';
+        // Extract tool/function call in a provider-agnostic way
+        const toolCall = extractToolCall({ choices: [{ message }] });
 
         // Save conversation history
         saveConversationHistory(resolvedSessionId, validated.question, answer);
 
-        return formatResponse(answer, resolvedSessionId);
+        return formatResponse(answer, resolvedSessionId, toolCall);
     } catch (error) {
         handleAPIError(error, 'Anthropic', 'ANTHROPIC_API_KEY');
     }
@@ -303,9 +307,16 @@ async function handleGeminiRequest(args) {
     const { resolvedSessionId, history } = setupConversationContext(validated.session_id, validated.question);
 
     try {
-        const model = genAI.getGenerativeModel({
+        const modelConfig = {
             model: validated.model,
-        });
+        };
+
+        // Add tools if provided
+        if (validated.tools) {
+            modelConfig.tools = validated.tools;
+        }
+
+        const model = genAI.getGenerativeModel(modelConfig);
 
         // Convert conversation history to Gemini format
         const geminiHistory = history.map(msg => ({
@@ -334,21 +345,20 @@ async function handleGeminiRequest(args) {
             }
         };
 
-        // Add tools if provided
-        if (validated.tools) {
-            requestParams.tools = validated.tools;
-        }
+        // Note: Tools are already configured in the model, not in generateContent request
 
         // Use systemInstruction as per Gemini API docs
         const result = await model.generateContent(requestParams);
 
         const response = await result.response;
         const answer = response.text() || 'No response generated';
+        // Extract tool/function call in a provider-agnostic way
+        const toolCall = extractToolCall({ candidates: [{ content: response.candidates?.[0]?.content }] });
 
         // Save conversation history
         saveConversationHistory(resolvedSessionId, validated.question, answer);
 
-        return formatResponse(answer, resolvedSessionId);
+        return formatResponse(answer, resolvedSessionId, toolCall);
     } catch (error) {
         if (error.message?.includes('API_KEY')) {
             throw new Error('Google API key is invalid or missing. Please set GOOGLE_API_KEY environment variable.');
