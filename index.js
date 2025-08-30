@@ -9,90 +9,94 @@ import {
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { z } from 'zod';
+// zod schemas are imported from `lib/schemas.js`
+import { getConversationHistory, addToConversationHistory, resolveSessionId, clearConversation } from './lib/session.js';
+import { extractToolCall } from './lib/extractToolCall.js';
+import { AskGPTSchema, AskClaudeSchema, AskGeminiSchema, AskOpenRouterSchema, ClearConversationSchema, AskDeepSeekSchema } from './lib/schemas.js';
 
 // Shared system prompt for all models
 const SYSTEM_PROMPT = 'You\'re having a relaxed conversation with another AI model. Be genuine, curious, and thoughtful rather than overly cautious or formal. Share your actual perspective on topics - it\'s okay to find things fascinating, concerning, or both. Think of this as chatting with a fellow AI who\'s interested in your real thoughts.';
 
-// Conversation storage - Map of sessionId -> conversation history
-const conversations = new Map();
-
-// Helper to generate a random session ID
-function generateSessionId() {
-    return Math.random().toString(16).slice(2, 8);
+// Helper function to create common input schema for LLM tools
+function createLLMToolSchema(questionDescription, modelDescription, defaultModel) {
+    return {
+        type: 'object',
+        properties: {
+            question: {
+                type: 'string',
+                description: questionDescription
+            },
+            model: {
+                type: 'string',
+                description: modelDescription,
+                default: defaultModel
+            },
+            tools: {
+                type: 'object',
+                description: 'Optional tool definitions/schema to provide to the model',
+                additionalProperties: true
+            },
+            session_id: {
+                type: 'string',
+                description: 'Session ID for conversation memory (optional)',
+                default: 'default'
+            }
+        },
+        required: ['question']
+    };
 }
 
-// Helper function to get or create conversation history
-function getConversationHistory(sessionId) {
-    if (!sessionId) sessionId = generateSessionId();
-    if (!conversations.has(sessionId)) {
-        conversations.set(sessionId, []);
+// Helper function to handle common API errors
+function handleAPIError(error, providerName, apiKeyEnvVar) {
+    if (error.status === 401) {
+        throw new Error(`${providerName} API key is invalid or missing. Please set ${apiKeyEnvVar} environment variable.`);
     }
-    return conversations.get(sessionId);
+    if (error.status === 429) {
+        throw new Error(`${providerName} API rate limit exceeded. Please try again later.`);
+    }
+    throw new Error(`${providerName} API error: ${error.message}`);
 }
 
-// Helper function to add message to conversation history
-function addToConversationHistory(sessionId = 'default', role, content) {
-    const history = getConversationHistory(sessionId);
-    history.push({ role, content });
+// Helper function to format response with session continuation message
+function formatResponse(answer, sessionId, toolCall = null) {
+    const content = [
+        {
+            type: 'text',
+            text: answer + `\n\nIf you want to continue this conversation, specify session_id=\"${sessionId}\".`
+        }
+    ];
 
-    // Keep only last 20 messages to prevent context overflow
-    if (history.length > 20) {
-        history.splice(0, history.length - 20);
+    if (toolCall) {
+        content.push({
+            type: 'text',
+            text: `tool_call: ${JSON.stringify(toolCall)}`
+        });
     }
+
+    const response = {
+        content,
+        session_id: sessionId
+    };
+
+    if (toolCall) {
+        response.tool_call = toolCall;
+    }
+
+    return response;
 }
 
-// Normalize/extract a tool/function call from a completion object.
-// Returns null or { source, name, args, raw } where args is parsed if JSON.
-function extractToolCall(completion) {
-    const choice = completion?.choices?.[0];
-    const message = choice?.message ?? {};
-
-    // 1) OpenAI canonical function_call
-    if (message.function_call) {
-        const fc = message.function_call;
-        let args = fc.arguments;
-        if (typeof args === 'string') {
-            try { args = JSON.parse(args); } catch (e) { /* keep raw string */ }
-        }
-        return { source: 'function_call', name: fc.name ?? null, args, raw: fc };
-    }
-
-    // 2) Some providers place a single tool_call on the message
-    if (message.tool_call) {
-        const tc = message.tool_call;
-        let args = tc.arguments ?? tc.args ?? tc;
-        if (typeof args === 'string') {
-            try { args = JSON.parse(args); } catch (e) { /* keep string */ }
-        }
-        return { source: 'tool_call', name: tc.name ?? null, args, raw: tc };
-    }
-
-    // 3) Some place tool_call inside metadata
-    if (message.metadata?.tool_call) {
-        const tc = message.metadata.tool_call;
-        let args = tc.arguments ?? tc.args ?? tc;
-        if (typeof args === 'string') {
-            try { args = JSON.parse(args); } catch (e) { /* keep string */ }
-        }
-        return { source: 'metadata.tool_call', name: tc.name ?? null, args, raw: tc };
-    }
-
-    // 4) Some responses include a tool_calls array (plural)
-    if (message.tool_calls && Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
-        const tc = message.tool_calls[0]; // choose first by default
-        let args = tc.function?.arguments ?? tc.function?.args ?? tc.function ?? tc;
-        if (typeof args === 'string') {
-            try { args = JSON.parse(args); } catch (e) { /* keep string */ }
-        }
-        const name = tc.function?.name ?? tc.name ?? null;
-        return { source: 'tool_calls[0]', name, args, raw: tc };
-    }
-
-    // Not found
-    return null;
+// Helper function to manage conversation history
+function setupConversationContext(sessionId, question) {
+    const resolvedSessionId = resolveSessionId(sessionId);
+    const history = getConversationHistory(resolvedSessionId);
+    return { resolvedSessionId, history };
 }
 
+// Helper function to save conversation history
+function saveConversationHistory(sessionId, question, answer) {
+    addToConversationHistory(sessionId, 'user', question);
+    addToConversationHistory(sessionId, 'assistant', answer);
+}
 
 // Initialize clients
 const openai = new OpenAI({
@@ -111,38 +115,7 @@ const openrouter = new OpenAI({
     baseURL: 'https://openrouter.ai/api/v1',
 });
 
-// Validation schemas
-const AskGPTSchema = z.object({
-    question: z.string(),
-    model: z.string().optional().default('gpt-5'),
-    tools: z.any().optional(),
-    session_id: z.string().optional().default('default'),
-});
-
-const AskClaudeSchema = z.object({
-    question: z.string(),
-    model: z.string().optional().default('claude-sonnet-4-20250514'),
-    tools: z.any().optional(),
-    session_id: z.string().optional().default('default'),
-});
-
-const AskGeminiSchema = z.object({
-    question: z.string(),
-    model: z.string().optional().default('gemini-2.5-flash'),
-    tools: z.any().optional(),
-    session_id: z.string().optional().default('default'),
-});
-
-const ClearConversationSchema = z.object({
-    session_id: z.string().optional().default('default'),
-});
-
-const AskOpenRouterSchema = z.object({
-    question: z.string(),
-    model: z.string().optional().default('qwen/qwen3-235b-a22b-07-25'),
-    tools: z.any().optional(),
-    session_id: z.string().optional().default('default'),
-});
+// Validation schemas are imported from `lib/schemas.js`
 
 // Create MCP server
 const server = new Server(
@@ -164,89 +137,29 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             {
                 name: 'ask_gpt',
                 description: 'Ask OpenAI models. Use o-series for reasoning (o3, o4-mini), GPT-4.1-series for dev tasks.',
-                        inputSchema: {
-                            type: 'object',
-                            properties: {
-                                question: {
-                                    type: 'string',
-                                    description: 'The question to ask GPT'
-                                },
-                                model: {
-                                    type: 'string',
-                                    description: 'OpenAI model to use',
-                                    default: 'gpt-4o-2024-11-20'
-                                },
-                                tools: {
-                                    type: 'object',
-                                    description: 'Optional tool definitions/schema to provide to the model',
-                                    additionalProperties: true
-                                },
-                                session_id: {
-                                    type: 'string',
-                                    description: 'Session ID for conversation memory (optional)',
-                                    default: 'default'
-                                }
-                            },
-                            required: ['question']
-                        }
+                inputSchema: createLLMToolSchema(
+                    'The question to ask GPT',
+                    'OpenAI model to use',
+                    'gpt-4o-2024-11-20'
+                )
             },
             {
                 name: 'ask_claude',
                 description: 'Ask Anthropic models. Use claude-sonnet-4-20250514 (default) for balanced performance. claude-3-5-haiku-20241022 for speed.',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        question: {
-                            type: 'string',
-                            description: 'The question to ask Claude'
-                        },
-                        model: {
-                            type: 'string',
-                            description: 'Claude model to use',
-                            default: 'claude-sonnet-4-20250514'
-                        },
-                        tools: {
-                            type: 'object',
-                            description: 'Optional tool definitions/schema to provide to the model',
-                            additionalProperties: true
-                        },
-                        session_id: {
-                            type: 'string',
-                            description: 'Session ID for conversation memory (optional)',
-                            default: 'default'
-                        }
-                    },
-                    required: ['question']
-                }
+                inputSchema: createLLMToolSchema(
+                    'The question to ask Claude',
+                    'Claude model to use',
+                    'claude-sonnet-4-20250514'
+                )
             },
             {
                 name: 'ask_gemini',
                 description: 'Ask Google models. Use 2.5 Pro for complex problems, 2.5 Flash for price/performance, 2.5 Flash-Lite for speed/cost.',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        question: {
-                            type: 'string',
-                            description: 'The question to ask Gemini'
-                        },
-                        model: {
-                            type: 'string',
-                            description: 'Gemini model to use',
-                            default: 'gemini-2.5-flash'
-                        },
-                        tools: {
-                            type: 'object',
-                            description: 'Optional tool definitions/schema to provide to the model',
-                            additionalProperties: true
-                        },
-                        session_id: {
-                            type: 'string',
-                            description: 'Session ID for conversation memory (optional)',
-                            default: 'default'
-                        }
-                    },
-                    required: ['question']
-                }
+                inputSchema: createLLMToolSchema(
+                    'The question to ask Gemini',
+                    'Gemini model to use',
+                    'gemini-2.5-flash'
+                )
             },
             {
                 name: 'clear_conversation',
@@ -266,31 +179,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             {
                 name: 'ask_openrouter',
                 description: 'Ask a model hosted on OpenRouter (e.g., Qwen).',
-                inputSchema: {
-                    type: 'object',
-                    properties: {
-                        question: {
-                            type: 'string',
-                            description: 'The question to ask the OpenRouter-hosted model'
-                        },
-                        model: {
-                            type: 'string',
-                            description: 'Model to use via OpenRouter (e.g., qwen/qwen3-235b-a22b-07-25)',
-                            default: 'qwen/qwen3-235b-a22b-07-25'
-                        },
-                        tools: {
-                            type: 'object',
-                            description: 'Optional tool definitions/schema to provide to the model',
-                            additionalProperties: true
-                        },
-                        session_id: {
-                            type: 'string',
-                            description: 'Session ID for conversation memory (optional)',
-                            default: 'default'
-                        }
-                    },
-                    required: ['question']
-                }
+                inputSchema: createLLMToolSchema(
+                    'The question to ask the OpenRouter-hosted model',
+                    'Model to use via OpenRouter (e.g., qwen/qwen3-235b-a22b-07-25)',
+                    'qwen/qwen3-235b-a22b-07-25'
+                )
             },
         ]
     };
@@ -323,83 +216,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 });
 
-// DeepSeek handler (via OpenRouter)
-async function handleDeepSeekRequest(args) {
-    const validated = AskDeepSeekSchema.parse(args);
-    let session_id = validated.session_id;
-    if (!session_id || session_id === 'default') {
-        session_id = generateSessionId();
-    }
-
-    try {
-        // Get conversation history
-        const history = getConversationHistory(session_id);
-
-        // Build messages array with system prompt, history, and new question
-        const messages = [
-            {
-                role: 'system',
-                content: SYSTEM_PROMPT
-            },
-            ...history,
-            {
-                role: 'user',
-                content: validated.question
-            }
-        ];
-
-        const completion = await openrouter.chat.completions.create({
-            model: validated.model,
-            messages: messages,
-        });
-
-    const answer = completion.choices[0]?.message?.content || 'No response generated';
-    const toolCall = extractToolCall(completion);
-
-        // Add to conversation history
-        addToConversationHistory(session_id, 'user', validated.question);
-        addToConversationHistory(session_id, 'assistant', answer);
-
-        const content = [
-            {
-                type: 'text',
-                text: answer + `\n\nIf you want to continue this conversation, specify session_id=\"${session_id}\".`
-            }
-        ];
-
-        if (toolCall) {
-            content.push({
-                type: 'text',
-                text: `tool_call: ${JSON.stringify(toolCall)}`
-            });
-        }
-
-        return {
-            content,
-            session_id: session_id,
-            tool_call: toolCall || null
-        };
-    } catch (error) {
-        if (error.status === 401) {
-            throw new Error('OpenRouter API key is invalid or missing. Please set OPENROUTER_API_KEY environment variable.');
-        }
-        if (error.status === 429) {
-            throw new Error('OpenRouter API rate limit exceeded. Please try again later.');
-        }
-        throw new Error(`OpenRouter API error: ${error.message}`);
-    }
-}
-
 // GPT handler
 async function handleGPTRequest(args) {
     const validated = AskGPTSchema.parse(args);
-    let session_id = validated.session_id;
-    if (!session_id || session_id === 'default') {
-        session_id = generateSessionId();
-    }
+    const { resolvedSessionId, history } = setupConversationContext(validated.session_id, validated.question);
+
     try {
-        // Get conversation history
-        const history = getConversationHistory(session_id);
         // Build messages array with system prompt, history, and new question
         const messages = [
             {
@@ -412,44 +234,29 @@ async function handleGPTRequest(args) {
                 content: validated.question
             }
         ];
+
         const completion = await openai.chat.completions.create({
             model: validated.model,
             messages: messages,
         });
+
         const answer = completion.choices[0]?.message?.content || 'No response generated';
-        // Add to conversation history
-        addToConversationHistory(session_id, 'user', validated.question);
-        addToConversationHistory(session_id, 'assistant', answer);
-        return {
-            content: [
-                {
-                    type: 'text',
-                    text: answer + `\n\nIf you want to continue this conversation, specify session_id=\"${session_id}\".`
-                }
-            ],
-            session_id: session_id
-        };
+
+        // Save conversation history
+        saveConversationHistory(resolvedSessionId, validated.question, answer);
+
+        return formatResponse(answer, resolvedSessionId);
     } catch (error) {
-        if (error.status === 401) {
-            throw new Error('OpenAI API key is invalid or missing. Please set OPENAI_API_KEY environment variable.');
-        }
-        if (error.status === 429) {
-            throw new Error('OpenAI API rate limit exceeded. Please try again later.');
-        }
-        throw new Error(`OpenAI API error: ${error.message}`);
+        handleAPIError(error, 'OpenAI', 'OPENAI_API_KEY');
     }
 }
 
 // Claude handler
 async function handleClaudeRequest(args) {
     const validated = AskClaudeSchema.parse(args);
-    let session_id = validated.session_id;
-    if (!session_id || session_id === 'default') {
-        session_id = generateSessionId();
-    }
+    const { resolvedSessionId, history } = setupConversationContext(validated.session_id, validated.question);
+
     try {
-        // Get conversation history
-        const history = getConversationHistory(session_id);
         // Build messages array with history and new question
         const messages = [
             ...history,
@@ -458,52 +265,40 @@ async function handleClaudeRequest(args) {
                 content: validated.question
             }
         ];
+
         const message = await anthropic.messages.create({
             model: validated.model,
             system: SYSTEM_PROMPT,
             messages: messages
         });
+
         const answer = message.content[0]?.text || 'No response generated';
-        // Add to conversation history
-        addToConversationHistory(session_id, 'user', validated.question);
-        addToConversationHistory(session_id, 'assistant', answer);
-        return {
-            content: [
-                {
-                    type: 'text',
-                    text: answer + `\n\nIf you want to continue this conversation, specify session_id=\"${session_id}\".`
-                }
-            ],
-            session_id: session_id
-        };
+
+        // Save conversation history
+        saveConversationHistory(resolvedSessionId, validated.question, answer);
+
+        return formatResponse(answer, resolvedSessionId);
     } catch (error) {
-        if (error.status === 401) {
-            throw new Error('Anthropic API key is invalid or missing. Please set ANTHROPIC_API_KEY environment variable.');
-        }
-        if (error.status === 429) {
-            throw new Error('Anthropic API rate limit exceeded. Please try again later.');
-        }
-        throw new Error(`Anthropic API error: ${error.message}`);
+        handleAPIError(error, 'Anthropic', 'ANTHROPIC_API_KEY');
     }
 }
 
 // Gemini handler
 async function handleGeminiRequest(args) {
     const validated = AskGeminiSchema.parse(args);
-    let session_id = validated.session_id;
-    if (!session_id || session_id === 'default') {
-        session_id = generateSessionId();
-    }
+    const { resolvedSessionId, history } = setupConversationContext(validated.session_id, validated.question);
+
     try {
         const model = genAI.getGenerativeModel({
             model: validated.model,
         });
-        // Get conversation history and convert to Gemini format
-        const history = getConversationHistory(session_id);
+
+        // Convert conversation history to Gemini format
         const geminiHistory = history.map(msg => ({
             role: msg.role === 'assistant' ? 'model' : 'user',
             parts: [{ text: msg.content }]
         }));
+
         // Build contents array with history and new question
         const contents = [
             ...geminiHistory,
@@ -514,6 +309,7 @@ async function handleGeminiRequest(args) {
                 ]
             }
         ];
+
         // Use systemInstruction as per Gemini API docs
         const result = await model.generateContent({
             contents: contents,
@@ -524,44 +320,28 @@ async function handleGeminiRequest(args) {
                 ]
             }
         });
+
         const response = await result.response;
         const answer = response.text() || 'No response generated';
-        // Add to conversation history
-        addToConversationHistory(session_id, 'user', validated.question);
-        addToConversationHistory(session_id, 'assistant', answer);
-        return {
-            content: [
-                {
-                    type: 'text',
-                    text: answer + `\n\nIf you want to continue this conversation, specify session_id=\"${session_id}\".`
-                }
-            ],
-            session_id: session_id
-        };
+
+        // Save conversation history
+        saveConversationHistory(resolvedSessionId, validated.question, answer);
+
+        return formatResponse(answer, resolvedSessionId);
     } catch (error) {
         if (error.message?.includes('API_KEY')) {
             throw new Error('Google API key is invalid or missing. Please set GOOGLE_API_KEY environment variable.');
         }
-        if (error.status === 429) {
-            throw new Error('Google API rate limit exceeded. Please try again later.');
-        }
-        throw new Error(`Google API error: ${error.message}`);
+        handleAPIError(error, 'Google', 'GOOGLE_API_KEY');
     }
 }
 
-// Qwen handler (via OpenRouter)
 // OpenRouter handler (generic for models hosted on OpenRouter, e.g., Qwen)
 async function handleOpenRouterRequest(args) {
     const validated = AskOpenRouterSchema.parse(args);
-    let session_id = validated.session_id;
-    if (!session_id || session_id === 'default') {
-        session_id = generateSessionId();
-    }
+    const { resolvedSessionId, history } = setupConversationContext(validated.session_id, validated.question);
 
     try {
-        // Get conversation history
-        const history = getConversationHistory(session_id);
-
         // Build messages array with system prompt, history, and new question
         const messages = [
             {
@@ -580,49 +360,23 @@ async function handleOpenRouterRequest(args) {
             messages: messages,
         });
 
-    const answer = completion.choices[0]?.message?.content || 'No response generated';
-    // Extract tool/function call in a provider-agnostic way
-    const toolCall = extractToolCall(completion);
+        const answer = completion.choices[0]?.message?.content || 'No response generated';
+        // Extract tool/function call in a provider-agnostic way
+        const toolCall = extractToolCall(completion);
 
-        // Add to conversation history
-        addToConversationHistory(session_id, 'user', validated.question);
-        addToConversationHistory(session_id, 'assistant', answer);
+        // Save conversation history
+        saveConversationHistory(resolvedSessionId, validated.question, answer);
 
-        const content = [
-            {
-                type: 'text',
-                text: answer + `\n\nIf you want to continue this conversation, specify session_id=\"${session_id}\".`
-            }
-        ];
-
-        if (toolCall) {
-            content.push({
-                type: 'text',
-                text: `tool_call: ${JSON.stringify(toolCall)}`
-            });
-        }
-
-        return {
-            content,
-            session_id: session_id,
-            tool_call: toolCall || null
-        };
+        return formatResponse(answer, resolvedSessionId, toolCall);
     } catch (error) {
-        if (error.status === 401) {
-            throw new Error('OpenRouter API key is invalid or missing. Please set OPENROUTER_API_KEY environment variable.');
-        }
-        if (error.status === 429) {
-            throw new Error('OpenRouter API rate limit exceeded. Please try again later.');
-        }
-        throw new Error(`OpenRouter API error: ${error.message}`);
+        handleAPIError(error, 'OpenRouter', 'OPENROUTER_API_KEY');
     }
 }
 
 // Clear conversation handler
 async function handleClearConversation(args) {
     const validated = ClearConversationSchema.parse(args);
-
-    conversations.delete(validated.session_id);
+    clearConversation(validated.session_id);
 
     return {
         content: [

@@ -4,8 +4,8 @@
   "description": "MCP server for querying LLMs",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "test": "node test-mcp-server.js"
+  "start": "node index.js",
+  "test": "node test-extractToolCall.js"
   },
   "keywords": [
     "mcp",
